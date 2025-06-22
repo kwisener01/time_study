@@ -150,6 +150,47 @@ class WorkstationAnalyzer:
         
         return breakdown
 
+def create_safe_pie_chart(va_time, nva_time):
+    """
+    Safely create a pie chart with proper data validation
+    """
+    try:
+        # Convert to float and handle None/NaN values
+        va_val = float(va_time) if va_time is not None and not pd.isna(va_time) else 0
+        nva_val = float(nva_time) if nva_time is not None and not pd.isna(nva_time) else 0
+        
+        # Ensure non-negative values
+        va_val = max(0, va_val)
+        nva_val = max(0, nva_val)
+        
+        # Check if we have valid data for the chart
+        total_time = va_val + nva_val
+        if total_time == 0:
+            st.warning("No time data available to display in pie chart")
+            return None
+        
+        # Create the pie chart
+        fig_pie = go.Figure(data=[go.Pie(
+            labels=['Value-Added', 'Non-Value-Added'],
+            values=[va_val, nva_val],
+            colors=['#2E8B57', '#CD5C5C'],
+            hole=0.4,
+            textinfo='label+percent',
+            textposition='auto'
+        )])
+        
+        fig_pie.update_layout(
+            title="Time Distribution",
+            height=300,
+            showlegend=True
+        )
+        
+        return fig_pie
+        
+    except Exception as e:
+        st.error(f"Error creating pie chart: {str(e)}")
+        return None
+
 def main():
     st.set_page_config(
         page_title="Workstation Analysis Demo",
@@ -245,19 +286,12 @@ def main():
         col1, col2 = st.columns(2)
         
         with col1:
-            # Time breakdown pie chart
-            fig_pie = go.Figure(data=[go.Pie(
-                labels=['Value-Added', 'Non-Value-Added'],
-                values=[stats['va_time'], stats['nva_time']],
-                colors=['#2E8B57', '#CD5C5C'],
-                hole=0.4
-            )])
-            fig_pie.update_layout(
-                title="Time Distribution",
-                height=300,
-                showlegend=True
-            )
-            st.plotly_chart(fig_pie, use_container_width=True)
+            # Time breakdown pie chart - FIXED VERSION
+            fig_pie = create_safe_pie_chart(stats['va_time'], stats['nva_time'])
+            if fig_pie is not None:
+                st.plotly_chart(fig_pie, use_container_width=True)
+            else:
+                st.info("Pie chart cannot be displayed - insufficient data")
         
         with col2:
             # Activity breakdown
