@@ -353,7 +353,11 @@ def main():
     col1, col2, col3 = st.columns([3, 1, 1])
     
     with col1:
-        task_name = st.text_input("Task Name", placeholder="e.g., Assemble motor housing", key="task_input")
+        # Use a counter to reset the input field after successful submission
+        if 'input_counter' not in st.session_state:
+            st.session_state.input_counter = 0
+        
+        task_name = st.text_input("Task Name", placeholder="e.g., Assemble motor housing", key=f"task_input_{st.session_state.input_counter}")
     
     with col2:
         st.write("") # Spacing
@@ -362,8 +366,8 @@ def main():
                 success, message = analyzer.start_timer(task_name.strip())
                 if success:
                     st.success(message)
-                    # Clear the input
-                    st.session_state.task_input = ""
+                    # Reset the input field by incrementing the counter
+                    st.session_state.input_counter += 1
                 else:
                     st.error(message)
                 st.rerun()
