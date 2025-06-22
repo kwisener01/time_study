@@ -1,199 +1,118 @@
 import streamlit as st
 import numpy as np
 import time
-from datetime import datetime
-import io
-import base64
+import random
+from datetime import datetime, timedelta
+import pandas as pd
+import plotly.express as px
+import plotly.graph_objects as go
 
-# Try to import optional dependencies with fallbacks
-try:
-    import cv2
-    CV2_AVAILABLE = True
-except ImportError:
-    CV2_AVAILABLE = False
-    st.error("OpenCV not available. Please install opencv-python-headless")
-
-try:
-    import mediapipe as mp
-    MEDIAPIPE_AVAILABLE = True
-except ImportError:
-    MEDIAPIPE_AVAILABLE = False
-    st.error("MediaPipe not available. Please install mediapipe")
-
-class MockWorkstationAnalyzer:
-    """Simplified analyzer for demo purposes when dependencies aren't available"""
+class WorkstationAnalyzer:
+    """Demo workstation analyzer without computer vision dependencies"""
     
     def __init__(self):
+        self.reset_analysis()
+        self.activity_types = {
+            'VA': ['Assembly Work', 'Welding', 'Tool Operation', 'Quality Check', 'Installation'],
+            'NVA': ['Reaching', 'Waiting', 'Walking', 'Searching', 'Setup', 'Idle']
+        }
+        
+    def reset_analysis(self):
+        """Reset all analysis data"""
         self.analysis_data = {
             'session_start': time.time(),
             'value_added_time': 0,
             'non_value_added_time': 0,
-            'current_activity': 'Demo Mode',
-            'activity_history': []
+            'current_activity': None,
+            'activity_history': [],
+            'productivity_score': 0,
+            'cycle_count': 0
         }
         
-    def simulate_analysis(self):
-        """Simulate analysis for demo purposes"""
-        import random
-        activities = ['VA: Assembly Work', 'VA: Tool Operation', 'NVA: Reaching', 'NVA: Waiting']
-        activity = random.choice(activities)
+    def simulate_activity_cycle(self):
+        """Simulate a realistic work cycle"""
+        # Generate a sequence of activities
+        cycle_activities = []
         
-        # Simulate timing
+        # Start with setup (NVA)
+        setup_time = random.uniform(2, 8)
+        cycle_activities.append({
+            'type': 'NVA',
+            'activity': 'Setup',
+            'duration': setup_time,
+            'efficiency': random.uniform(0.3, 0.6)
+        })
+        
+        # Add 2-4 value-added activities
+        va_count = random.randint(2, 4)
+        for _ in range(va_count):
+            activity = random.choice(self.activity_types['VA'])
+            duration = random.uniform(15, 45)
+            efficiency = random.uniform(0.7, 0.95)
+            cycle_activities.append({
+                'type': 'VA',
+                'activity': activity,
+                'duration': duration,
+                'efficiency': efficiency
+            })
+            
+            # Sometimes add NVA between VA activities
+            if random.random() < 0.4:
+                nva_activity = random.choice(self.activity_types['NVA'])
+                nva_duration = random.uniform(3, 12)
+                cycle_activities.append({
+                    'type': 'NVA',
+                    'activity': nva_activity,
+                    'duration': nva_duration,
+                    'efficiency': random.uniform(0.2, 0.5)
+                })
+        
+        # Process the cycle
+        for activity_data in cycle_activities:
+            self.add_activity(
+                f"{activity_data['type']}: {activity_data['activity']}",
+                activity_data['duration'],
+                activity_data['efficiency']
+            )
+        
+        self.analysis_data['cycle_count'] += 1
+        
+    def add_activity(self, activity, duration, efficiency=None):
+        """Add an activity to the analysis"""
         now = time.time()
-        duration = random.uniform(1, 5)
         
+        # Update timing
         if 'VA' in activity:
             self.analysis_data['value_added_time'] += duration
         else:
             self.analysis_data['non_value_added_time'] += duration
-            
-        self.analysis_data['current_activity'] = activity
+        
+        # Record in history
         self.analysis_data['activity_history'].append({
             'activity': activity,
             'duration': duration,
-            'timestamp': now
+            'timestamp': now,
+            'efficiency': efficiency or random.uniform(0.5, 0.9)
         })
         
-    def get_current_stats(self):
+        self.analysis_data['current_activity'] = activity
+        self.update_productivity_score()
+        
+    def update_productivity_score(self):
+        """Calculate overall productivity score"""
         total_time = self.analysis_data['value_added_time'] + self.analysis_data['non_value_added_time']
-        
         if total_time > 0:
-            va_percentage = (self.analysis_data['value_added_time'] / total_time) * 100
-            nva_percentage = (self.analysis_data['non_value_added_time'] / total_time) * 100
-        else:
-            va_percentage = nva_percentage = 0
-        
-        return {
-            'total_time': total_time,
-            'va_time': self.analysis_data['value_added_time'],
-            'nva_time': self.analysis_data['non_value_added_time'],
-            'va_percentage': va_percentage,
-            'nva_percentage': nva_percentage,
-            'current_activity': self.analysis_data['current_activity'],
-            'session_duration': time.time() - self.analysis_data['session_start']
-        }
-
-class WorkstationAnalyzer:
-    """Full analyzer when all dependencies are available"""
-    
-    def __init__(self):
-        if not (CV2_AVAILABLE and MEDIAPIPE_AVAILABLE):
-            raise ImportError("Required dependencies not available")
+            va_ratio = self.analysis_data['value_added_time'] / total_time
             
-        self.mp_pose = mp.solutions.pose
-        self.pose = self.mp_pose.Pose(
-            min_detection_confidence=0.5,
-            min_tracking_confidence=0.5
-        )
-        self.mp_drawing = mp.solutions.drawing_utils
-        
-        self.analysis_data = {
-            'session_start': time.time(),
-            'cycle_start': None,
-            'value_added_time': 0,
-            'non_value_added_time': 0,
-            'current_activity': None,
-            'activity_history': []
-        }
-        
-        self.previous_landmarks = None
-        self.movement_history = []
-    
-    def calculate_movement_speed(self, current_landmarks, previous_landmarks):
-        if previous_landmarks is None:
-            return 0
-            
-        total_movement = 0
-        key_points = [
-            self.mp_pose.PoseLandmark.LEFT_WRIST,
-            self.mp_pose.PoseLandmark.RIGHT_WRIST,
-            self.mp_pose.PoseLandmark.LEFT_ELBOW,
-            self.mp_pose.PoseLandmark.RIGHT_ELBOW
-        ]
-        
-        for point in key_points:
-            curr = current_landmarks[point]
-            prev = previous_landmarks[point]
-            movement = np.sqrt((curr.x - prev.x)**2 + (curr.y - prev.y)**2)
-            total_movement += movement
-            
-        return total_movement / len(key_points)
-    
-    def classify_activity(self, landmarks):
-        left_shoulder = landmarks[self.mp_pose.PoseLandmark.LEFT_SHOULDER]
-        right_shoulder = landmarks[self.mp_pose.PoseLandmark.RIGHT_SHOULDER]
-        left_wrist = landmarks[self.mp_pose.PoseLandmark.LEFT_WRIST]
-        right_wrist = landmarks[self.mp_pose.PoseLandmark.RIGHT_WRIST]
-        left_elbow = landmarks[self.mp_pose.PoseLandmark.LEFT_ELBOW]
-        right_elbow = landmarks[self.mp_pose.PoseLandmark.RIGHT_ELBOW]
-        
-        movement_speed = self.calculate_movement_speed(landmarks, self.previous_landmarks)
-        self.movement_history.append(movement_speed)
-        if len(self.movement_history) > 10:
-            self.movement_history.pop(0)
-        
-        avg_movement = np.mean(self.movement_history) if self.movement_history else 0
-        shoulder_height = (left_shoulder.y + right_shoulder.y) / 2
-        hands_elevated = (left_wrist.y < shoulder_height - 0.1) or (right_wrist.y < shoulder_height - 0.1)
-        high_movement = avg_movement > 0.05
-        
-        if hands_elevated and high_movement:
-            if left_wrist.y < left_elbow.y or right_wrist.y < right_elbow.y:
-                return 'VA: Assembly Work'
+            # Factor in efficiency scores
+            if self.analysis_data['activity_history']:
+                avg_efficiency = np.mean([a['efficiency'] for a in self.analysis_data['activity_history']])
+                self.analysis_data['productivity_score'] = (va_ratio * 0.7 + avg_efficiency * 0.3) * 100
             else:
-                return 'VA: Tool Operation'
-        elif high_movement:
-            return 'NVA: Material Handling'
-        elif hands_elevated:
-            return 'NVA: Reaching/Positioning'
-        else:
-            return 'NVA: Idle/Waiting'
-    
-    def analyze_frame(self, frame):
-        rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        results = self.pose.process(rgb_frame)
-        
-        if results.pose_landmarks:
-            landmarks = results.pose_landmarks.landmark
-            activity = self.classify_activity(landmarks)
-            self.update_timers(activity)
-            
-            self.mp_drawing.draw_landmarks(
-                frame, 
-                results.pose_landmarks, 
-                self.mp_pose.POSE_CONNECTIONS
-            )
-            
-            cv2.putText(frame, activity, (10, 30), 
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
-            
-            self.previous_landmarks = landmarks
-            
-        return frame, results.pose_landmarks is not None
-    
-    def update_timers(self, activity):
-        now = time.time()
-        
-        if self.analysis_data['current_activity'] != activity:
-            if self.analysis_data['cycle_start'] is not None:
-                duration = now - self.analysis_data['cycle_start']
-                
-                if self.analysis_data['current_activity']:
-                    if 'VA' in self.analysis_data['current_activity']:
-                        self.analysis_data['value_added_time'] += duration
-                    else:
-                        self.analysis_data['non_value_added_time'] += duration
-                    
-                    self.analysis_data['activity_history'].append({
-                        'activity': self.analysis_data['current_activity'],
-                        'duration': duration,
-                        'timestamp': now
-                    })
-            
-            self.analysis_data['current_activity'] = activity
-            self.analysis_data['cycle_start'] = now
+                self.analysis_data['productivity_score'] = va_ratio * 100
     
     def get_current_stats(self):
+        """Get current analysis statistics"""
         total_time = self.analysis_data['value_added_time'] + self.analysis_data['non_value_added_time']
         
         if total_time > 0:
@@ -208,138 +127,262 @@ class WorkstationAnalyzer:
             'nva_time': self.analysis_data['non_value_added_time'],
             'va_percentage': va_percentage,
             'nva_percentage': nva_percentage,
-            'current_activity': self.analysis_data['current_activity'] or 'Not Detected',
-            'session_duration': time.time() - self.analysis_data['session_start']
+            'current_activity': self.analysis_data['current_activity'] or 'No Activity',
+            'session_duration': time.time() - self.analysis_data['session_start'],
+            'productivity_score': self.analysis_data['productivity_score'],
+            'cycle_count': self.analysis_data['cycle_count'],
+            'activities_count': len(self.analysis_data['activity_history'])
         }
+    
+    def get_activity_breakdown(self):
+        """Get detailed activity breakdown"""
+        breakdown = {}
+        for record in self.analysis_data['activity_history']:
+            activity = record['activity']
+            if activity not in breakdown:
+                breakdown[activity] = {'total_time': 0, 'count': 0, 'avg_efficiency': 0}
+            
+            breakdown[activity]['total_time'] += record['duration']
+            breakdown[activity]['count'] += 1
+            breakdown[activity]['avg_efficiency'] = (
+                breakdown[activity]['avg_efficiency'] + record['efficiency']
+            ) / 2 if breakdown[activity]['avg_efficiency'] > 0 else record['efficiency']
+        
+        return breakdown
 
 def main():
     st.set_page_config(
-        page_title="Workstation Analysis",
+        page_title="Workstation Analysis Demo",
         page_icon="🏭",
         layout="wide"
     )
     
-    st.title("🏭 Workstation Analysis System")
+    st.title("🏭 Workstation Analysis System - Demo")
+    st.markdown("*Interactive demonstration of workstation productivity analysis*")
     
-    # Check dependencies
-    if not CV2_AVAILABLE or not MEDIAPIPE_AVAILABLE:
-        st.warning("⚠️ Running in Demo Mode - Some dependencies are missing")
-        st.info("""
-        **Missing Dependencies:**
-        - OpenCV: ❌ if CV2_AVAILABLE else ✅
-        - MediaPipe: ❌ if MEDIAPIPE_AVAILABLE else ✅
-        
-        **To enable full functionality:**
-        1. Install dependencies locally: `pip install opencv-python mediapipe`
-        2. Run locally instead of on Streamlit Cloud
-        """.replace("❌ if CV2_AVAILABLE else ✅", "✅" if CV2_AVAILABLE else "❌")
-          .replace("❌ if MEDIAPIPE_AVAILABLE else ✅", "✅" if MEDIAPIPE_AVAILABLE else "❌"))
-        
-        # Use mock analyzer
-        if 'mock_analyzer' not in st.session_state:
-            st.session_state.mock_analyzer = MockWorkstationAnalyzer()
-        
-        analyzer = st.session_state.mock_analyzer
-        
-        # Demo interface
-        st.subheader("📊 Demo Analysis")
-        
-        col1, col2 = st.columns(2)
-        with col1:
-            if st.button("🎲 Simulate Activity"):
-                analyzer.simulate_analysis()
-                st.success("Activity simulated!")
-        
-        with col2:
-            if st.button("🔄 Reset Demo"):
-                st.session_state.mock_analyzer = MockWorkstationAnalyzer()
-                st.success("Demo reset!")
-        
-        # Display stats
-        stats = analyzer.get_current_stats()
-        
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            st.metric("Value-Added Time", f"{stats['va_time']:.1f}s", f"{stats['va_percentage']:.1f}%")
-        with col2:
-            st.metric("Non-Value-Added Time", f"{stats['nva_time']:.1f}s", f"{stats['nva_percentage']:.1f}%")
-        with col3:
-            st.metric("Current Activity", stats['current_activity'])
-        
-        # Activity history
-        if analyzer.analysis_data['activity_history']:
-            st.subheader("📈 Activity History")
-            for i, record in enumerate(analyzer.analysis_data['activity_history'][-5:]):  # Last 5 activities
-                st.write(f"{i+1}. **{record['activity']}** - {record['duration']:.1f}s")
-        
-    else:
-        # Full functionality with camera
-        st.success("✅ All dependencies available - Full functionality enabled")
-        
-        if 'analyzer' not in st.session_state:
+    # Initialize analyzer
+    if 'analyzer' not in st.session_state:
+        st.session_state.analyzer = WorkstationAnalyzer()
+    
+    analyzer = st.session_state.analyzer
+    
+    # Control Panel
+    st.subheader("🎛️ Control Panel")
+    col1, col2, col3, col4 = st.columns(4)
+    
+    with col1:
+        if st.button("🚀 Simulate Work Cycle", type="primary"):
+            analyzer.simulate_activity_cycle()
+            st.success(f"Work cycle #{analyzer.analysis_data['cycle_count']} completed!")
+    
+    with col2:
+        if st.button("➕ Add Single Activity"):
+            activities = ['VA: Assembly', 'VA: Quality Check', 'NVA: Waiting', 'NVA: Reaching']
+            activity = random.choice(activities)
+            duration = random.uniform(10, 30)
+            analyzer.add_activity(activity, duration)
+            st.success(f"Added: {activity}")
+    
+    with col3:
+        if st.button("🔄 Reset Analysis"):
             st.session_state.analyzer = WorkstationAnalyzer()
-        if 'is_running' not in st.session_state:
-            st.session_state.is_running = False
+            st.success("Analysis reset!")
+    
+    with col4:
+        auto_simulate = st.checkbox("🔁 Auto-simulate")
+    
+    # Auto-simulation
+    if auto_simulate:
+        if 'last_auto_sim' not in st.session_state:
+            st.session_state.last_auto_sim = time.time()
         
-        analyzer = st.session_state.analyzer
-        
-        # Camera interface
-        st.subheader("📹 Camera Analysis")
+        if time.time() - st.session_state.last_auto_sim > 3:  # Every 3 seconds
+            analyzer.add_activity(
+                random.choice(['VA: Assembly', 'VA: Tool Operation', 'NVA: Waiting', 'NVA: Reaching']),
+                random.uniform(2, 8)
+            )
+            st.session_state.last_auto_sim = time.time()
+            st.rerun()
+    
+    # Current Statistics
+    stats = analyzer.get_current_stats()
+    
+    st.subheader("📊 Real-time Metrics")
+    col1, col2, col3, col4 = st.columns(4)
+    
+    with col1:
+        st.metric(
+            "Productivity Score", 
+            f"{stats['productivity_score']:.1f}%",
+            delta=f"Cycle {stats['cycle_count']}" if stats['cycle_count'] > 0 else None
+        )
+    
+    with col2:
+        st.metric(
+            "Value-Added Time", 
+            f"{stats['va_time']:.1f}s",
+            delta=f"{stats['va_percentage']:.1f}%"
+        )
+    
+    with col3:
+        st.metric(
+            "Non-Value-Added Time", 
+            f"{stats['nva_time']:.1f}s",
+            delta=f"{stats['nva_percentage']:.1f}%"
+        )
+    
+    with col4:
+        st.metric(
+            "Total Activities", 
+            stats['activities_count'],
+            delta=f"Current: {stats['current_activity'][:20]}..." if len(stats['current_activity']) > 20 else stats['current_activity']
+        )
+    
+    # Visualizations
+    if stats['total_time'] > 0:
+        st.subheader("📈 Analysis Visualizations")
         
         col1, col2 = st.columns(2)
+        
         with col1:
-            camera_source = st.selectbox("Camera Source", [0, 1, 2], index=0)
+            # Time breakdown pie chart
+            fig_pie = go.Figure(data=[go.Pie(
+                labels=['Value-Added', 'Non-Value-Added'],
+                values=[stats['va_time'], stats['nva_time']],
+                colors=['#2E8B57', '#CD5C5C'],
+                hole=0.4
+            )])
+            fig_pie.update_layout(
+                title="Time Distribution",
+                height=300,
+                showlegend=True
+            )
+            st.plotly_chart(fig_pie, use_container_width=True)
+        
         with col2:
-            confidence = st.slider("Detection Confidence", 0.3, 0.9, 0.5)
+            # Activity breakdown
+            breakdown = analyzer.get_activity_breakdown()
+            if breakdown:
+                activities = list(breakdown.keys())
+                times = [breakdown[act]['total_time'] for act in activities]
+                colors = ['#2E8B57' if 'VA' in act else '#CD5C5C' for act in activities]
+                
+                fig_bar = go.Figure(data=[go.Bar(
+                    x=activities,
+                    y=times,
+                    marker_color=colors
+                )])
+                fig_bar.update_layout(
+                    title="Activity Time Breakdown",
+                    xaxis_title="Activity",
+                    yaxis_title="Time (seconds)",
+                    height=300
+                )
+                fig_bar.update_xaxis(tickangle=45)
+                st.plotly_chart(fig_bar, use_container_width=True)
         
-        # Control buttons
-        col1, col2 = st.columns(2)
-        with col1:
-            start_camera = st.button("▶️ Start Camera Analysis")
-        with col2:
-            stop_camera = st.button("⏹️ Stop Analysis")
-        
-        if start_camera:
-            st.session_state.is_running = True
-        if stop_camera:
-            st.session_state.is_running = False
-        
-        # Camera processing would go here
-        # Note: Real-time camera processing in Streamlit Cloud is limited
-        if st.session_state.is_running:
-            st.info("Camera analysis would run here. Note: Real-time camera processing works best when running locally.")
+        # Timeline
+        if len(analyzer.analysis_data['activity_history']) > 1:
+            st.subheader("⏱️ Activity Timeline")
+            
+            # Create timeline data
+            timeline_data = []
+            cumulative_time = 0
+            
+            for i, record in enumerate(analyzer.analysis_data['activity_history'][-20:]):  # Last 20 activities
+                timeline_data.append({
+                    'Activity': record['activity'],
+                    'Start': cumulative_time,
+                    'Duration': record['duration'],
+                    'End': cumulative_time + record['duration'],
+                    'Efficiency': record['efficiency'],
+                    'Type': 'VA' if 'VA' in record['activity'] else 'NVA'
+                })
+                cumulative_time += record['duration']
+            
+            df = pd.DataFrame(timeline_data)
+            
+            fig_timeline = px.timeline(
+                df, 
+                x_start="Start", 
+                x_end="End", 
+                y="Activity",
+                color="Type",
+                color_discrete_map={'VA': '#2E8B57', 'NVA': '#CD5C5C'},
+                title="Recent Activity Timeline"
+            )
+            fig_timeline.update_layout(height=400)
+            st.plotly_chart(fig_timeline, use_container_width=True)
+    
+    # Detailed Analysis
+    with st.expander("📋 Detailed Analysis Report"):
+        if stats['total_time'] > 0:
+            st.markdown(f"""
+            ## Session Summary
+            - **Session Duration**: {stats['session_duration']:.1f} seconds
+            - **Analysis Period**: {stats['total_time']:.1f} seconds
+            - **Productivity Score**: {stats['productivity_score']:.1f}%
+            - **Work Cycles Completed**: {stats['cycle_count']}
+            
+            ## Time Analysis
+            - **Value-Added Activities**: {stats['va_time']:.1f}s ({stats['va_percentage']:.1f}%)
+            - **Non-Value-Added Activities**: {stats['nva_time']:.1f}s ({stats['nva_percentage']:.1f}%)
+            
+            ## Recommendations
+            """)
+            
+            if stats['va_percentage'] < 60:
+                st.warning("⚠️ **Low Value-Added Ratio**: Consider reducing setup time and eliminating unnecessary movements.")
+            elif stats['va_percentage'] < 75:
+                st.info("ℹ️ **Moderate Efficiency**: Look for opportunities to streamline non-value-added activities.")
+            else:
+                st.success("✅ **High Efficiency**: Excellent value-added ratio! Maintain current practices.")
+            
+            # Activity breakdown table
+            breakdown = analyzer.get_activity_breakdown()
+            if breakdown:
+                st.markdown("### Activity Breakdown")
+                breakdown_df = pd.DataFrame([
+                    {
+                        'Activity': activity,
+                        'Total Time (s)': data['total_time'],
+                        'Count': data['count'],
+                        'Avg Duration (s)': data['total_time'] / data['count'],
+                        'Avg Efficiency': f"{data['avg_efficiency']:.1%}"
+                    }
+                    for activity, data in breakdown.items()
+                ])
+                st.dataframe(breakdown_df, use_container_width=True)
+        else:
+            st.info("Start simulating activities to see detailed analysis!")
     
     # Instructions
-    with st.expander("📖 Instructions & Troubleshooting"):
+    with st.expander("📖 How to Use This Demo"):
         st.markdown("""
-        ## Setup Instructions
+        ## Getting Started
+        1. **Simulate Work Cycle**: Click to generate a realistic sequence of work activities
+        2. **Add Single Activity**: Add individual activities to see immediate impact
+        3. **Auto-simulate**: Enable continuous activity generation for live demonstration
+        4. **Reset Analysis**: Clear all data and start fresh
         
-        ### For Local Development:
-        ```bash
-        # Create virtual environment
-        python -m venv workstation_env
-        source workstation_env/bin/activate  # Windows: workstation_env\\Scripts\\activate
+        ## Understanding the Metrics
+        - **Productivity Score**: Overall efficiency combining time utilization and activity efficiency
+        - **Value-Added (VA)**: Activities that directly contribute to the final product
+        - **Non-Value-Added (NVA)**: Necessary but non-productive activities (setup, waiting, etc.)
         
-        # Install dependencies
-        pip install streamlit opencv-python mediapipe numpy
+        ## Activity Types
+        **Value-Added Activities:**
+        - Assembly Work, Welding, Tool Operation, Quality Check, Installation
         
-        # Run application
-        streamlit run app.py
-        ```
+        **Non-Value-Added Activities:**
+        - Reaching, Waiting, Walking, Searching, Setup, Idle
         
-        ### For Streamlit Cloud Deployment:
-        1. Use `opencv-python-headless` instead of `opencv-python`
-        2. Pin specific versions in requirements.txt
-        3. Camera access is limited on cloud platforms
-        
-        ### Common Issues:
-        - **"installer returned a non-zero exit code"**: Try pinning specific package versions
-        - **MediaPipe installation fails**: Ensure Python version is 3.8-3.11
-        - **Camera not working**: Check permissions and ensure camera isn't in use by other apps
-        
-        ### Activity Classifications:
-        - **VA (Value-Added)**: Assembly work, tool operations, productive movements
-        - **NVA (Non-Value-Added)**: Reaching, waiting, idle time, non-productive movements
+        ## Real Implementation
+        This demo simulates what a real computer vision system would detect:
+        - Hand and body position tracking
+        - Movement pattern analysis  
+        - Automatic activity classification
+        - Real-time productivity metrics
         """)
 
 if __name__ == "__main__":
