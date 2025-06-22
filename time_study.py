@@ -169,11 +169,11 @@ def create_safe_pie_chart(va_time, nva_time):
             st.warning("No time data available to display in pie chart")
             return None
         
-        # Create the pie chart
+        # Create the pie chart - FIXED: colors should be in marker property
         fig_pie = go.Figure(data=[go.Pie(
             labels=['Value-Added', 'Non-Value-Added'],
             values=[va_val, nva_val],
-            colors=['#2E8B57', '#CD5C5C'],
+            marker=dict(colors=['#2E8B57', '#CD5C5C']),
             hole=0.4,
             textinfo='label+percent',
             textposition='auto'
@@ -301,19 +301,24 @@ def main():
                 times = [breakdown[act]['total_time'] for act in activities]
                 colors = ['#2E8B57' if 'VA' in act else '#CD5C5C' for act in activities]
                 
-                fig_bar = go.Figure(data=[go.Bar(
-                    x=activities,
-                    y=times,
-                    marker_color=colors
-                )])
-                fig_bar.update_layout(
-                    title="Activity Time Breakdown",
-                    xaxis_title="Activity",
-                    yaxis_title="Time (seconds)",
-                    height=300
-                )
-                fig_bar.update_xaxis(tickangle=45)
-                st.plotly_chart(fig_bar, use_container_width=True)
+                try:
+                    fig_bar = go.Figure(data=[go.Bar(
+                        x=activities,
+                        y=times,
+                        marker_color=colors
+                    )])
+                    fig_bar.update_layout(
+                        title="Activity Time Breakdown",
+                        xaxis_title="Activity",
+                        yaxis_title="Time (seconds)",
+                        height=300,
+                        xaxis=dict(tickangle=45)  # FIXED: Use dict format instead of update_xaxis
+                    )
+                    st.plotly_chart(fig_bar, use_container_width=True)
+                except Exception as e:
+                    st.error(f"Error creating bar chart: {str(e)}")
+            else:
+                st.info("No activity data available for breakdown chart")
         
         # Timeline
         if len(analyzer.analysis_data['activity_history']) > 1:
