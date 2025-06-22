@@ -7,181 +7,232 @@ import plotly.graph_objects as go
 from datetime import datetime, timedelta
 import io
 
-class WorkstationAnalyzer:
-    """Real workstation analyzer for production use"""
+class SimpleWorkstationAnalyzer:
+    """Simplified workstation analyzer with continuous timing"""
     
     def __init__(self, station_id=None):
         self.station_id = station_id
         self.reset_analysis()
-        self.activity_types = {
-            'Value-Added': ['Assembly', 'Welding', 'Machining', 'Quality Check', 'Installation', 'Testing', 'Packaging'],
-            'Non-Value-Added': ['Setup', 'Cleanup', 'Material Handling', 'Waiting', 'Rework', 'Walking', 'Searching']
-        }
         
     def reset_analysis(self):
         """Reset all analysis data"""
         self.analysis_data = {
             'session_start': None,
-            'session_end': None,
-            'current_task_start': None,
-            'activities': [],
-            'is_timing': False
+            'cycles': [],
+            'current_cycle': None,
+            'is_timing': False,
+            'is_waiting': False,
+            'wait_start': None
         }
         
-    def start_timing(self):
+    def start_session(self):
         """Start the timing session"""
         current_time = datetime.now()
         self.analysis_data['session_start'] = current_time
         self.analysis_data['is_timing'] = True
         return current_time
     
-    def stop_timing(self):
-        """Stop the timing session"""
-        if self.analysis_data['is_timing']:
-            self.analysis_data['session_end'] = datetime.now()
-            self.analysis_data['is_timing'] = False
-            return True
-        return False
-    
-    def add_task(self, task_name, activity_type, notes=""):
-        """Add a task with automatic timing"""
-        if not self.analysis_data['is_timing']:
-            return False, "Timing session not active"
-        
+    def start_timer(self, task_name):
+        """Start a new cycle or resume from waiting"""
         current_time = datetime.now()
         
-        # If there's a previous task running, close it
-        if self.analysis_data['current_task_start']:
-            duration = (current_time - self.analysis_data['current_task_start']).total_seconds()
-            
-            # Update the last activity with actual duration
-            if self.analysis_data['activities']:
-                self.analysis_data['activities'][-1]['end_time'] = current_time
-                self.analysis_data['activities'][-1]['duration'] = duration
+        if not self.analysis_data['is_timing']:
+            return False, "Session not started"
         
-        # Add new task
-        task_record = {
-            'station_id': self.station_id,
+        # If we were waiting, calculate wait time and end the wait
+        if self.analysis_data['is_waiting'] and self.analysis_data['current_cycle']:
+            wait_duration = (current_time - self.analysis_data['wait_start']).total_seconds()
+            self.analysis_data['current_cycle']['wait_time'] += wait_duration
+            self.analysis_data['is_waiting'] = False
+            self.analysis_data['wait_start'] = None
+            
+            # Resume the cycle
+            self.analysis_data['current_cycle']['work_resume_time'] = current_time
+            return True, f"Resumed work on '{self.analysis_data['current_cycle']['task_name']}' after {wait_duration:.1f}s wait"
+        
+        # If there's an active cycle, complete it first
+        if self.analysis_data['current_cycle'] and not self.analysis_data['is_waiting']:
+            self.complete_current_cycle()
+        
+        # Start new cycle
+        cycle = {
             'task_name': task_name,
-            'activity_type': activity_type,
             'start_time': current_time,
             'end_time': None,
-            'duration': 0,
-            'notes': notes,
-            'operator': st.session_state.get('operator_name', 'Unknown')
+            'work_time': 0,
+            'wait_time': 0,
+            'total_time': 0,
+            'operator': st.session_state.get('operator_name', 'Unknown'),
+            'work_resume_time': current_time
         }
         
-        self.analysis_data['activities'].append(task_record)
-        self.analysis_data['current_task_start'] = current_time
-        
-        return True, f"Task '{task_name}' started"
+        self.analysis_data['current_cycle'] = cycle
+        return True, f"Started timer for '{task_name}'"
     
-    def finish_current_task(self):
-        """Finish the currently running task"""
-        if not self.analysis_data['current_task_start'] or not self.analysis_data['activities']:
-            return False, "No active task to finish"
+    def start_waiting(self):
+        """Start waiting period within current cycle"""
+        if not self.analysis_data['current_cycle'] or self.analysis_data['is_waiting']:
+            return False, "No active cycle or already waiting"
         
         current_time = datetime.now()
-        duration = (current_time - self.analysis_data['current_task_start']).total_seconds()
         
-        # Update the last activity
-        self.analysis_data['activities'][-1]['end_time'] = current_time
-        self.analysis_data['activities'][-1]['duration'] = duration
+        # Add work time from last resume to now
+        if self.analysis_data['current_cycle']['work_resume_time']:
+            work_duration = (current_time - self.analysis_data['current_cycle']['work_resume_time']).total_seconds()
+            self.analysis_data['current_cycle']['work_time'] += work_duration
         
-        self.analysis_data['current_task_start'] = None
+        # Start waiting
+        self.analysis_data['is_waiting'] = True
+        self.analysis_data['wait_start'] = current_time
         
-        return True, f"Task completed - Duration: {duration:.1f} seconds"
+        return True, "Started waiting period"
+    
+    def complete_current_cycle(self):
+        """Complete the current cycle"""
+        if not self.analysis_data['current_cycle']:
+            return False, "No active cycle"
+        
+        current_time = datetime.now()
+        cycle = self.analysis_data['current_cycle']
+        
+        # If we're waiting, add the wait time
+        if self.analysis_data['is_waiting']:
+            wait_duration = (current_time - self.analysis_data['wait_start']).total_seconds()
+            cycle['wait_time'] += wait_duration
+            self.analysis_data['is_waiting'] = False
+            self.analysis_data['wait_start'] = None
+        else:
+            # Add final work time
+            if cycle['work_resume_time']:
+                work_duration = (current_time - cycle['work_resume_time']).total_seconds()
+                cycle['work_time'] += work_duration
+        
+        # Complete the cycle
+        cycle['end_time'] = current_time
+        cycle['total_time'] = (current_time - cycle['start_time']).total_seconds()
+        
+        # Add to completed cycles
+        self.analysis_data['cycles'].append(cycle)
+        self.analysis_data['current_cycle'] = None
+        
+        return True, f"Completed cycle for '{cycle['task_name']}'"
     
     def get_current_stats(self):
         """Get current analysis statistics"""
-        if not self.analysis_data['activities']:
-            return {
-                'total_time': 0,
-                'va_time': 0,
-                'nva_time': 0,
-                'va_percentage': 0,
-                'nva_percentage': 0,
-                'current_task': 'No active task',
-                'session_duration': 0,
-                'task_count': 0,
-                'avg_task_duration': 0
-            }
+        completed_cycles = self.analysis_data['cycles']
+        current_cycle = self.analysis_data['current_cycle']
         
-        completed_activities = [a for a in self.analysis_data['activities'] if a['end_time'] is not None]
+        # Calculate stats from completed cycles
+        total_work_time = sum(c['work_time'] for c in completed_cycles)
+        total_wait_time = sum(c['wait_time'] for c in completed_cycles)
         
-        if not completed_activities:
-            return {
-                'total_time': 0,
-                'va_time': 0,
-                'nva_time': 0,
-                'va_percentage': 0,
-                'nva_percentage': 0,
-                'current_task': self.analysis_data['activities'][-1]['task_name'] if self.analysis_data['activities'] else 'No active task',
-                'session_duration': (datetime.now() - self.analysis_data['session_start']).total_seconds() if self.analysis_data['session_start'] else 0,
-                'task_count': len(self.analysis_data['activities']),
-                'avg_task_duration': 0
-            }
+        # Add current cycle time if active
+        current_work_time = 0
+        current_wait_time = 0
+        current_task = "No active task"
         
-        va_time = sum(a['duration'] for a in completed_activities if a['activity_type'] == 'Value-Added')
-        nva_time = sum(a['duration'] for a in completed_activities if a['activity_type'] == 'Non-Value-Added')
-        total_time = va_time + nva_time
+        if current_cycle:
+            current_task = current_cycle['task_name']
+            current_time = datetime.now()
+            
+            # Calculate current cycle work time
+            current_work_time = current_cycle['work_time']
+            if not self.analysis_data['is_waiting'] and current_cycle['work_resume_time']:
+                current_work_time += (current_time - current_cycle['work_resume_time']).total_seconds()
+            
+            # Calculate current cycle wait time
+            current_wait_time = current_cycle['wait_time']
+            if self.analysis_data['is_waiting'] and self.analysis_data['wait_start']:
+                current_wait_time += (current_time - self.analysis_data['wait_start']).total_seconds()
         
-        va_percentage = (va_time / total_time * 100) if total_time > 0 else 0
-        nva_percentage = (nva_time / total_time * 100) if total_time > 0 else 0
+        total_work = total_work_time + current_work_time
+        total_wait = total_wait_time + current_wait_time
+        total_time = total_work + total_wait
         
-        avg_duration = total_time / len(completed_activities) if completed_activities else 0
-        
-        current_task = 'No active task'
-        if self.analysis_data['current_task_start'] and self.analysis_data['activities']:
-            current_task = self.analysis_data['activities'][-1]['task_name']
+        work_percentage = (total_work / total_time * 100) if total_time > 0 else 0
+        wait_percentage = (total_wait / total_time * 100) if total_time > 0 else 0
         
         session_duration = 0
         if self.analysis_data['session_start']:
-            end_time = self.analysis_data['session_end'] or datetime.now()
-            session_duration = (end_time - self.analysis_data['session_start']).total_seconds()
+            session_duration = (datetime.now() - self.analysis_data['session_start']).total_seconds()
+        
+        avg_cycle_time = 0
+        if completed_cycles:
+            avg_cycle_time = sum(c['total_time'] for c in completed_cycles) / len(completed_cycles)
         
         return {
             'total_time': total_time,
-            'va_time': va_time,
-            'nva_time': nva_time,
-            'va_percentage': va_percentage,
-            'nva_percentage': nva_percentage,
+            'work_time': total_work,
+            'wait_time': total_wait,
+            'work_percentage': work_percentage,
+            'wait_percentage': wait_percentage,
             'current_task': current_task,
             'session_duration': session_duration,
-            'task_count': len(completed_activities),
-            'avg_task_duration': avg_duration
+            'cycle_count': len(completed_cycles),
+            'avg_cycle_time': avg_cycle_time,
+            'is_waiting': self.analysis_data['is_waiting'],
+            'current_cycle_active': current_cycle is not None
         }
     
-    def get_activities_dataframe(self):
-        """Get activities as a pandas DataFrame for export"""
-        if not self.analysis_data['activities']:
+    def get_cycles_dataframe(self):
+        """Get cycles as a pandas DataFrame for export"""
+        all_cycles = self.analysis_data['cycles'].copy()
+        
+        # Add current cycle if active
+        if self.analysis_data['current_cycle']:
+            current = self.analysis_data['current_cycle'].copy()
+            current_time = datetime.now()
+            
+            # Calculate current times
+            if not current['end_time']:
+                current['total_time'] = (current_time - current['start_time']).total_seconds()
+                
+                # Add current work time
+                if not self.analysis_data['is_waiting'] and current['work_resume_time']:
+                    current['work_time'] += (current_time - current['work_resume_time']).total_seconds()
+                
+                # Add current wait time
+                if self.analysis_data['is_waiting'] and self.analysis_data['wait_start']:
+                    current['wait_time'] += (current_time - self.analysis_data['wait_start']).total_seconds()
+                
+                current['end_time'] = current_time
+                current['status'] = 'In Progress'
+            
+            all_cycles.append(current)
+        
+        if not all_cycles:
             return pd.DataFrame()
         
         df_data = []
-        for activity in self.analysis_data['activities']:
+        for cycle in all_cycles:
             df_data.append({
-                'Station ID': activity['station_id'],
-                'Task Name': activity['task_name'],
-                'Activity Type': activity['activity_type'],
-                'Start Time': activity['start_time'].strftime('%Y-%m-%d %H:%M:%S') if activity['start_time'] else '',
-                'End Time': activity['end_time'].strftime('%Y-%m-%d %H:%M:%S') if activity['end_time'] else 'In Progress',
-                'Duration (seconds)': round(activity['duration'], 2),
-                'Duration (minutes)': round(activity['duration'] / 60, 2),
-                'Operator': activity['operator'],
-                'Notes': activity['notes']
+                'Station ID': self.station_id,
+                'Task Name': cycle['task_name'],
+                'Start Time': cycle['start_time'].strftime('%Y-%m-%d %H:%M:%S'),
+                'End Time': cycle['end_time'].strftime('%Y-%m-%d %H:%M:%S') if cycle['end_time'] else 'In Progress',
+                'Work Time (seconds)': round(cycle['work_time'], 2),
+                'Wait Time (seconds)': round(cycle['wait_time'], 2),
+                'Total Time (seconds)': round(cycle['total_time'], 2),
+                'Work Time (minutes)': round(cycle['work_time'] / 60, 2),
+                'Wait Time (minutes)': round(cycle['wait_time'] / 60, 2),
+                'Total Time (minutes)': round(cycle['total_time'] / 60, 2),
+                'Work %': round((cycle['work_time'] / cycle['total_time'] * 100), 1) if cycle['total_time'] > 0 else 0,
+                'Wait %': round((cycle['wait_time'] / cycle['total_time'] * 100), 1) if cycle['total_time'] > 0 else 0,
+                'Operator': cycle['operator'],
+                'Status': cycle.get('status', 'Completed')
             })
         
         return pd.DataFrame(df_data)
 
-def create_pie_chart(va_time, nva_time):
+def create_pie_chart(work_time, wait_time):
     """Create time distribution pie chart"""
-    if va_time == 0 and nva_time == 0:
+    if work_time == 0 and wait_time == 0:
         return None
     
     fig = go.Figure(data=[go.Pie(
-        labels=['Value-Added', 'Non-Value-Added'],
-        values=[va_time, nva_time],
-        marker=dict(colors=['#2E8B57', '#CD5C5C']),
+        labels=['Work Time', 'Wait Time'],
+        values=[work_time, wait_time],
+        marker=dict(colors=['#2E8B57', '#FFA500']),
         hole=0.4,
         textinfo='label+percent+value',
         texttemplate='%{label}<br>%{percent}<br>%{value:.1f}s'
@@ -194,263 +245,267 @@ def create_pie_chart(va_time, nva_time):
     
     return fig
 
-def create_timeline_chart(activities):
-    """Create activity timeline chart"""
-    if not activities:
+def create_cycle_chart(cycles_df):
+    """Create cycle analysis chart"""
+    if cycles_df.empty:
         return None
     
-    completed_activities = [a for a in activities if a['end_time'] is not None]
-    if not completed_activities:
-        return None
+    fig = go.Figure()
     
-    # Create timeline data
-    timeline_data = []
-    start_base = completed_activities[0]['start_time']
+    # Work time bars
+    fig.add_trace(go.Bar(
+        name='Work Time',
+        x=cycles_df['Task Name'],
+        y=cycles_df['Work Time (minutes)'],
+        marker_color='#2E8B57'
+    ))
     
-    for activity in completed_activities:
-        start_offset = (activity['start_time'] - start_base).total_seconds()
-        end_offset = start_offset + activity['duration']
-        
-        timeline_data.append({
-            'Task': activity['task_name'],
-            'Start': start_offset,
-            'End': end_offset,
-            'Type': activity['activity_type'],
-            'Duration': activity['duration']
-        })
-    
-    df = pd.DataFrame(timeline_data)
-    
-    fig = px.timeline(
-        df,
-        x_start="Start",
-        x_end="End", 
-        y="Task",
-        color="Type",
-        color_discrete_map={'Value-Added': '#2E8B57', 'Non-Value-Added': '#CD5C5C'},
-        title="Task Timeline"
-    )
+    # Wait time bars
+    fig.add_trace(go.Bar(
+        name='Wait Time',
+        x=cycles_df['Task Name'],
+        y=cycles_df['Wait Time (minutes)'],
+        marker_color='#FFA500'
+    ))
     
     fig.update_layout(
-        height=max(300, len(completed_activities) * 30),
-        xaxis_title="Time (seconds from start)"
+        title="Work vs Wait Time by Cycle",
+        xaxis_title="Task/Cycle",
+        yaxis_title="Time (minutes)",
+        barmode='stack',
+        height=400
     )
     
     return fig
 
 def main():
     st.set_page_config(
-        page_title="Workstation Analysis - MVP",
-        page_icon="🏭",
+        page_title="Simple Workstation Timer",
+        page_icon="⏱️",
         layout="wide"
     )
     
-    st.title("🏭 Workstation Time Analysis - MVP")
-    st.markdown("*Track and analyze workstation productivity in real-time*")
+    st.title("⏱️ Simple Workstation Timer")
+    st.markdown("*Continuous timing with work/wait tracking*")
     
     # Sidebar for session setup
     with st.sidebar:
-        st.header("📋 Session Setup")
+        st.header("📋 Setup")
         
         # Station ID input
-        station_id = st.text_input("Station ID/Number", value="WS-001", help="Enter the workstation identifier")
+        station_id = st.text_input("Station ID", value="WS-001")
         
         # Operator name
-        operator_name = st.text_input("Operator Name", value="", help="Enter operator name (optional)")
+        operator_name = st.text_input("Operator Name", value="")
         st.session_state['operator_name'] = operator_name
         
-        # Initialize or update analyzer
+        # Initialize analyzer
         if 'analyzer' not in st.session_state or st.session_state.get('current_station') != station_id:
-            st.session_state.analyzer = WorkstationAnalyzer(station_id)
+            st.session_state.analyzer = SimpleWorkstationAnalyzer(station_id)
             st.session_state.current_station = station_id
         
         analyzer = st.session_state.analyzer
-        analyzer.station_id = station_id  # Update station ID if changed
+        analyzer.station_id = station_id
         
         st.divider()
         
         # Session controls
-        st.header("⏱️ Session Controls")
+        st.header("🎛️ Session")
         
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            if not analyzer.analysis_data['is_timing']:
-                if st.button("▶️ Start Timing", type="primary", use_container_width=True):
-                    start_time = analyzer.start_timing()
-                    st.success(f"Session started at {start_time.strftime('%H:%M:%S')}")
-                    st.rerun()
-            else:
-                if st.button("⏹️ Stop Session", type="secondary", use_container_width=True):
-                    if analyzer.stop_timing():
-                        st.success("Session stopped")
-                        st.rerun()
-        
-        with col2:
-            if st.button("🔄 Reset All", use_container_width=True):
-                st.session_state.analyzer = WorkstationAnalyzer(station_id)
-                st.success("Session reset")
+        if not analyzer.analysis_data['is_timing']:
+            if st.button("▶️ Start Session", type="primary", use_container_width=True):
+                start_time = analyzer.start_session()
+                st.success(f"Session started!")
                 st.rerun()
+        else:
+            col1, col2 = st.columns(2)
+            with col1:
+                if st.button("⏹️ End Session", type="secondary", use_container_width=True):
+                    if analyzer.analysis_data['current_cycle']:
+                        analyzer.complete_current_cycle()
+                    analyzer.analysis_data['is_timing'] = False
+                    st.success("Session ended")
+                    st.rerun()
+            
+            with col2:
+                if st.button("🔄 Reset", use_container_width=True):
+                    st.session_state.analyzer = SimpleWorkstationAnalyzer(station_id)
+                    st.success("Reset complete")
+                    st.rerun()
         
-        # Current session status
+        # Session status
         if analyzer.analysis_data['is_timing']:
             st.success("🔴 **Session Active**")
             if analyzer.analysis_data['session_start']:
                 elapsed = (datetime.now() - analyzer.analysis_data['session_start']).total_seconds()
-                st.metric("Elapsed Time", f"{elapsed/60:.1f} min")
+                st.metric("Session Time", f"{elapsed/60:.1f} min")
         else:
             st.info("⚪ Session Inactive")
     
-    # Main content area
+    # Main content
     if not analyzer.analysis_data['is_timing']:
-        st.info("👈 Start a timing session from the sidebar to begin tracking tasks")
+        st.info("👈 Start a session from the sidebar to begin timing")
         return
     
-    # Task input section
-    st.subheader("➕ Add Task")
+    # Task controls
+    st.subheader("⏱️ Timer Controls")
     
-    col1, col2, col3 = st.columns([3, 2, 1])
+    col1, col2, col3 = st.columns([3, 1, 1])
     
     with col1:
-        task_name = st.text_input("Task Name", placeholder="e.g., Assemble motor housing")
+        task_name = st.text_input("Task Name", placeholder="e.g., Assemble motor housing", key="task_input")
     
     with col2:
-        activity_type = st.selectbox("Activity Type", ['Value-Added', 'Non-Value-Added'])
-    
-    with col3:
         st.write("") # Spacing
-        if st.button("➕ Add Task", type="primary"):
+        if st.button("▶️ Start Timer", type="primary", use_container_width=True):
             if task_name.strip():
-                success, message = analyzer.add_task(task_name.strip(), activity_type)
+                success, message = analyzer.start_timer(task_name.strip())
                 if success:
                     st.success(message)
+                    # Clear the input
+                    st.session_state.task_input = ""
                 else:
                     st.error(message)
                 st.rerun()
             else:
-                st.warning("Please enter a task name")
+                st.warning("Enter a task name")
     
-    # Finish current task button
-    if analyzer.analysis_data['current_task_start']:
-        col1, col2, col3 = st.columns([1, 1, 2])
-        with col2:
-            if st.button("✅ Finish Current Task", type="secondary"):
-                success, message = analyzer.finish_current_task()
+    with col3:
+        st.write("") # Spacing
+        wait_disabled = not analyzer.analysis_data.get('current_cycle') or analyzer.analysis_data.get('is_waiting')
+        
+        if analyzer.analysis_data.get('is_waiting'):
+            if st.button("▶️ Resume Work", type="secondary", use_container_width=True):
+                success, message = analyzer.start_timer(analyzer.analysis_data['current_cycle']['task_name'])
                 if success:
                     st.success(message)
+                st.rerun()
+        else:
+            if st.button("⏸️ Wait", disabled=wait_disabled, use_container_width=True):
+                success, message = analyzer.start_waiting()
+                if success:
+                    st.warning(message)
                 else:
                     st.error(message)
                 st.rerun()
     
-    # Current Statistics
+    # Current status
     stats = analyzer.get_current_stats()
     
-    st.subheader("📊 Current Session Metrics")
+    if stats['current_cycle_active']:
+        status_color = "orange" if stats['is_waiting'] else "green"
+        status_text = "⏸️ WAITING" if stats['is_waiting'] else "▶️ WORKING"
+        st.markdown(f":{status_color}[**{status_text}:** {stats['current_task']}]")
+    
+    # Metrics
+    st.subheader("📊 Session Metrics")
     
     col1, col2, col3, col4 = st.columns(4)
     
     with col1:
-        efficiency = stats['va_percentage'] if stats['total_time'] > 0 else 0
-        st.metric("Efficiency", f"{efficiency:.1f}%", help="Percentage of time spent on value-added activities")
+        efficiency = stats['work_percentage'] if stats['total_time'] > 0 else 0
+        st.metric("Work Efficiency", f"{efficiency:.1f}%", help="Percentage of time spent working")
     
     with col2:
-        st.metric("Total Tasks", stats['task_count'], help="Number of completed tasks")
+        st.metric("Total Cycles", stats['cycle_count'], help="Number of completed cycles")
     
     with col3:
-        st.metric("Total Time", f"{stats['total_time']/60:.1f} min", help="Total time for completed tasks")
+        st.metric("Total Time", f"{stats['total_time']/60:.1f} min", help="Total tracked time")
     
     with col4:
-        st.metric("Avg Task Time", f"{stats['avg_task_duration']/60:.1f} min", help="Average duration per task")
+        st.metric("Avg Cycle", f"{stats['avg_cycle_time']/60:.1f} min", help="Average time per cycle")
     
-    # Current task indicator
-    if stats['current_task'] != 'No active task':
-        st.info(f"🔵 **Current Task:** {stats['current_task']}")
+    # Real-time work/wait breakdown
+    col1, col2 = st.columns(2)
+    with col1:
+        st.metric("Work Time", f"{stats['work_time']/60:.1f} min", f"{stats['work_percentage']:.1f}%")
+    with col2:
+        st.metric("Wait Time", f"{stats['wait_time']/60:.1f} min", f"{stats['wait_percentage']:.1f}%")
     
     # Charts
     if stats['total_time'] > 0:
-        st.subheader("📈 Analysis Charts")
+        st.subheader("📈 Analysis")
         
         col1, col2 = st.columns(2)
         
         with col1:
-            pie_chart = create_pie_chart(stats['va_time'], stats['nva_time'])
+            pie_chart = create_pie_chart(stats['work_time'], stats['wait_time'])
             if pie_chart:
                 st.plotly_chart(pie_chart, use_container_width=True)
         
         with col2:
-            timeline_chart = create_timeline_chart(analyzer.analysis_data['activities'])
-            if timeline_chart:
-                st.plotly_chart(timeline_chart, use_container_width=True)
+            df = analyzer.get_cycles_dataframe()
+            if not df.empty:
+                cycle_chart = create_cycle_chart(df)
+                if cycle_chart:
+                    st.plotly_chart(cycle_chart, use_container_width=True)
     
-    # Data table and export
-    st.subheader("📋 Task Data")
+    # Data table
+    st.subheader("📋 Cycle Data")
     
-    df = analyzer.get_activities_dataframe()
+    df = analyzer.get_cycles_dataframe()
     
     if not df.empty:
         st.dataframe(df, use_container_width=True)
         
-        # Export options
+        # Export
         col1, col2, col3 = st.columns([1, 1, 2])
         
         with col1:
-            # CSV download
             csv = df.to_csv(index=False)
             st.download_button(
-                label="📥 Download CSV",
+                "📥 Download CSV",
                 data=csv,
                 file_name=f"workstation_{station_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
                 mime="text/csv"
             )
         
         with col2:
-            # Excel download
             buffer = io.BytesIO()
             with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
-                df.to_excel(writer, sheet_name='Task Data', index=False)
+                df.to_excel(writer, sheet_name='Cycle Data', index=False)
                 
-                # Add summary sheet
                 summary_df = pd.DataFrame([
                     ['Station ID', station_id],
                     ['Operator', operator_name or 'Not specified'],
                     ['Session Start', analyzer.analysis_data['session_start'].strftime('%Y-%m-%d %H:%M:%S') if analyzer.analysis_data['session_start'] else ''],
-                    ['Total Tasks', stats['task_count']],
+                    ['Total Cycles', stats['cycle_count']],
                     ['Total Time (min)', f"{stats['total_time']/60:.2f}"],
-                    ['Value-Added Time (min)', f"{stats['va_time']/60:.2f}"],
-                    ['Non-Value-Added Time (min)', f"{stats['nva_time']/60:.2f}"],
-                    ['Efficiency %', f"{stats['va_percentage']:.1f}%"],
+                    ['Work Time (min)', f"{stats['work_time']/60:.2f}"],
+                    ['Wait Time (min)', f"{stats['wait_time']/60:.2f}"],
+                    ['Work Efficiency %', f"{stats['work_percentage']:.1f}%"],
                 ], columns=['Metric', 'Value'])
                 
                 summary_df.to_excel(writer, sheet_name='Summary', index=False)
             
             st.download_button(
-                label="📊 Download Excel",
+                "📊 Download Excel",
                 data=buffer.getvalue(),
                 file_name=f"workstation_{station_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             )
     else:
-        st.info("No task data available yet. Add some tasks to see the data table.")
+        st.info("No cycle data yet. Start your first timer to begin tracking.")
     
-    # Quick tips
-    with st.expander("💡 Quick Tips"):
+    # Instructions
+    with st.expander("💡 How to Use"):
         st.markdown("""
-        **How to use this app:**
-        1. Enter your station ID and operator name in the sidebar
-        2. Click "Start Timing" to begin your session
-        3. Add tasks as you work - each new task automatically stops the previous one
-        4. Use "Finish Current Task" when you're done with the last task
-        5. Download your data as CSV or Excel for further analysis
+        **Simple 2-Button Operation:**
         
-        **Activity Types:**
-        - **Value-Added**: Activities that directly contribute to the product (assembly, machining, quality checks)
-        - **Non-Value-Added**: Necessary but non-productive activities (setup, cleanup, waiting, walking)
+        1. **Start Session** - Begin timing (sidebar)
+        2. **Start Timer** - Enter task name and start working
+        3. **Wait Button** - Press when waiting (materials, approval, etc.)
+        4. **Resume Work** - Press to continue working (appears when waiting)
+        5. **Start Timer** (again) - Completes current cycle and starts new one
         
-        **Tips for best results:**
-        - Be consistent with task naming
-        - Add tasks in real-time for accurate timing
-        - Use descriptive but concise task names
-        - Remember to finish your last task before ending the session
+        **Key Features:**
+        - ⏱️ **Continuous timing** - Clock never stops during session
+        - 🔄 **Automatic cycles** - Starting new timer completes previous cycle
+        - ⏸️ **Wait tracking** - Track non-productive waiting time
+        - 📊 **Live stats** - Real-time efficiency and timing data
+        - 📥 **Export data** - Download CSV/Excel reports
+        
+        **One Complete Cycle = Work Time + Wait Time**
         """)
 
 if __name__ == "__main__":
