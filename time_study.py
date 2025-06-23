@@ -1,6 +1,5 @@
 import streamlit as st
 import pandas as pd
-import numpy as np
 import plotly.graph_objects as go
 from datetime import datetime
 import io
@@ -28,9 +27,8 @@ class SimpleWorkstationAnalyzer:
         current_time = datetime.now()
         if not self.analysis_data['is_timing']:
             return False, "Session not started"
-
         if self.analysis_data['current_cycle']:
-            return False, "A cycle is already active. Stop it first."
+            return False, "A cycle is already active. Complete it first."
 
         cycle = {
             'task_name': task_name,
@@ -59,19 +57,7 @@ class SimpleWorkstationAnalyzer:
         self.analysis_data['wait_start'] = current_time
         return True, "Started waiting period"
 
-    def end_waiting(self):
-        if not self.analysis_data['current_cycle'] or not self.analysis_data['is_waiting']:
-            return False, "Not currently waiting"
-
-        current_time = datetime.now()
-        wait_duration = (current_time - self.analysis_data['wait_start']).total_seconds()
-        self.analysis_data['current_cycle']['wait_time'] += wait_duration
-        self.analysis_data['is_waiting'] = False
-        self.analysis_data['wait_start'] = None
-        self.analysis_data['current_cycle']['work_resume_time'] = current_time
-        return True, f"Resumed work after {wait_duration:.1f} seconds of wait"
-
-    def stop_timer(self):
+    def elapsed_time(self):
         if not self.analysis_data['current_cycle']:
             return False, "No active cycle"
 
@@ -88,6 +74,7 @@ class SimpleWorkstationAnalyzer:
         cycle['end_time'] = current_time
         cycle['total_time'] = (current_time - cycle['start_time']).total_seconds()
         self.analysis_data['cycles'].append(cycle)
+
         self.analysis_data['current_cycle'] = None
         self.analysis_data['is_waiting'] = False
         self.analysis_data['wait_start'] = None
@@ -132,7 +119,7 @@ def main():
         else:
             if st.button("⏹️ End Session", use_container_width=True):
                 if analyzer.analysis_data['current_cycle']:
-                    analyzer.stop_timer()
+                    analyzer.elapsed_time()
                 analyzer.analysis_data['is_timing'] = False
                 st.success("Session ended")
                 st.session_state.active_task_name = ""
@@ -175,15 +162,8 @@ def main():
                         st.rerun()
 
             with col2:
-                if analyzer.analysis_data['is_waiting']:
-                    if st.button("▶️ Elapsed Time", use_container_width=True):
-                        success, message = analyzer.end_waiting()
-                        st.toast(message)
-                        st.rerun()
-
-            with col3:
-                if st.button("⏹️ Stop Timer", use_container_width=True):
-                    success, message = analyzer.stop_timer()
+                if st.button("✅ Elapsed Time (Complete Cycle)", use_container_width=True):
+                    success, message = analyzer.elapsed_time()
                     st.toast(message)
                     st.rerun()
 
