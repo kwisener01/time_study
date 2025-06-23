@@ -29,16 +29,8 @@ class SimpleWorkstationAnalyzer:
         if not self.analysis_data['is_timing']:
             return False, "Session not started"
 
-        if self.analysis_data['is_waiting'] and self.analysis_data['current_cycle']:
-            wait_duration = (current_time - self.analysis_data['wait_start']).total_seconds()
-            self.analysis_data['current_cycle']['wait_time'] += wait_duration
-            self.analysis_data['is_waiting'] = False
-            self.analysis_data['wait_start'] = None
-            self.analysis_data['current_cycle']['work_resume_time'] = current_time
-            return True, f"Resumed work on '{self.analysis_data['current_cycle']['task_name']}'"
-
-        if self.analysis_data['current_cycle'] and not self.analysis_data['is_waiting']:
-            self.complete_current_cycle()
+        if self.analysis_data['current_cycle']:
+            return False, "A cycle is already active. Stop it first."
 
         cycle = {
             'task_name': task_name,
@@ -67,9 +59,21 @@ class SimpleWorkstationAnalyzer:
         self.analysis_data['wait_start'] = current_time
         return True, "Started waiting period"
 
-    def complete_current_cycle(self):
+    def end_waiting(self):
+        if not self.analysis_data['current_cycle'] or not self.analysis_data['is_waiting']:
+            return False, "Not currently waiting"
+
+        current_time = datetime.now()
+        wait_duration = (current_time - self.analysis_data['wait_start']).total_seconds()
+        self.analysis_data['current_cycle']['wait_time'] += wait_duration
+        self.analysis_data['is_waiting'] = False
+        self.analysis_data['wait_start'] = None
+        self.analysis_data['current_cycle']['work_resume_time'] = current_time
+        return True, f"Resumed work after {wait_duration:.1f} seconds of wait"
+
+    def stop_timer(self):
         if not self.analysis_data['current_cycle']:
-            return
+            return False, "No active cycle"
 
         current_time = datetime.now()
         cycle = self.analysis_data['current_cycle']
@@ -77,17 +81,17 @@ class SimpleWorkstationAnalyzer:
         if self.analysis_data['is_waiting']:
             wait_duration = (current_time - self.analysis_data['wait_start']).total_seconds()
             cycle['wait_time'] += wait_duration
-            self.analysis_data['is_waiting'] = False
-            self.analysis_data['wait_start'] = None
         else:
-            if cycle['work_resume_time']:
-                work_duration = (current_time - cycle['work_resume_time']).total_seconds()
-                cycle['work_time'] += work_duration
+            work_duration = (current_time - cycle['work_resume_time']).total_seconds()
+            cycle['work_time'] += work_duration
 
         cycle['end_time'] = current_time
         cycle['total_time'] = (current_time - cycle['start_time']).total_seconds()
         self.analysis_data['cycles'].append(cycle)
         self.analysis_data['current_cycle'] = None
+        self.analysis_data['is_waiting'] = False
+        self.analysis_data['wait_start'] = None
+        return True, "Cycle completed and logged"
 
     def get_cycles_dataframe(self):
         return pd.DataFrame(self.analysis_data['cycles'])
@@ -128,7 +132,7 @@ def main():
         else:
             if st.button("⏹️ End Session", use_container_width=True):
                 if analyzer.analysis_data['current_cycle']:
-                    analyzer.complete_current_cycle()
+                    analyzer.stop_timer()
                 analyzer.analysis_data['is_timing'] = False
                 st.success("Session ended")
                 st.session_state.active_task_name = ""
@@ -143,34 +147,7 @@ def main():
     if "active_task_name" not in st.session_state:
         st.session_state.active_task_name = ""
 
-    if st.session_state.active_task_name:
-        st.success(f"Active Task: **{st.session_state.active_task_name}**")
-        col1, col2, col3 = st.columns(3)
-
-        with col1:
-            if st.button("▶️ Start Timer", use_container_width=True):
-                success, message = analyzer.start_timer(st.session_state.active_task_name)
-                st.toast(message)
-                st.rerun()
-
-        with col2:
-            wait_disabled = not analyzer.analysis_data.get('current_cycle') or analyzer.analysis_data.get('is_waiting')
-            if analyzer.analysis_data.get('is_waiting'):
-                if st.button("▶️ Resume Work", use_container_width=True):
-                    success, message = analyzer.start_timer(st.session_state.active_task_name)
-                    st.toast(message)
-                    st.rerun()
-            else:
-                if st.button("⏸️ Wait", disabled=wait_disabled, use_container_width=True):
-                    success, message = analyzer.start_waiting()
-                    st.toast(message)
-                    st.rerun()
-
-        with col3:
-            if st.button("📝 Change Task", use_container_width=True):
-                st.session_state.active_task_name = ""
-                st.rerun()
-    else:
+    if st.session_state.active_task_name == "":
         task_name = st.text_input("Enter Task Name")
         if st.button("✅ Confirm Task", use_container_width=True):
             if task_name.strip():
@@ -179,6 +156,36 @@ def main():
                 st.rerun()
             else:
                 st.warning("Please enter a valid task name")
+    else:
+        st.success(f"Active Task: **{st.session_state.active_task_name}**")
+
+        if not analyzer.analysis_data['current_cycle']:
+            if st.button("▶️ Start Timer", use_container_width=True):
+                success, message = analyzer.start_timer(st.session_state.active_task_name)
+                st.toast(message)
+                st.rerun()
+        else:
+            col1, col2, col3 = st.columns(3)
+
+            with col1:
+                if not analyzer.analysis_data['is_waiting']:
+                    if st.button("⏸️ Wait", use_container_width=True):
+                        success, message = analyzer.start_waiting()
+                        st.toast(message)
+                        st.rerun()
+
+            with col2:
+                if analyzer.analysis_data['is_waiting']:
+                    if st.button("▶️ Elapsed Time", use_container_width=True):
+                        success, message = analyzer.end_waiting()
+                        st.toast(message)
+                        st.rerun()
+
+            with col3:
+                if st.button("⏹️ Stop Timer", use_container_width=True):
+                    success, message = analyzer.stop_timer()
+                    st.toast(message)
+                    st.rerun()
 
     st.subheader("Cycle Data")
     df = analyzer.get_cycles_dataframe()
