@@ -2,7 +2,6 @@ import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
 from datetime import datetime
-import io
 
 class SimpleWorkstationAnalyzer:
     def __init__(self, station_id=None):
@@ -152,7 +151,7 @@ def main():
                 st.toast(message)
                 st.rerun()
         else:
-            col1, col2, col3 = st.columns(3)
+            col1, col2 = st.columns(2)
 
             with col1:
                 if not analyzer.analysis_data['is_waiting']:
@@ -176,6 +175,11 @@ def main():
     total_work = sum(c['work_time'] for c in analyzer.analysis_data['cycles'])
     total_wait = sum(c['wait_time'] for c in analyzer.analysis_data['cycles'])
 
+    cycle_times = [c['total_time'] for c in analyzer.analysis_data['cycles'] if c['total_time'] > 0]
+    lowest_times = sorted(cycle_times)[:5]
+    average_time = sum(cycle_times) / len(cycle_times) if cycle_times else 0
+    std_dev = pd.Series(cycle_times).std() if cycle_times else 0
+
     col1, col2 = st.columns(2)
     with col1:
         st.metric("Total Work Time (min)", f"{total_work/60:.2f}")
@@ -185,6 +189,12 @@ def main():
     if total_work + total_wait > 0:
         fig = create_pie_chart(total_work, total_wait)
         st.plotly_chart(fig, use_container_width=True)
+
+    if cycle_times:
+        st.subheader("Cycle Time Stats (seconds)")
+        st.write(f"**5 Fastest Cycles:** { [round(t) for t in lowest_times] }")
+        st.write(f"**Average Cycle Time:** {average_time:.1f} sec")
+        st.write(f"**Standard Deviation:** {std_dev:.1f} sec")
 
 if __name__ == "__main__":
     main()
